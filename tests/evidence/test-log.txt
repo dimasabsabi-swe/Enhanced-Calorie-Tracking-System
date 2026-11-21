@@ -1,0 +1,71 @@
+ECTS end-to-end test run — 2026-11-21 11:19
+================================================================
+Unit tests: 50 passed, 0 failed, 50 total
+[PASS] TC-01 Unauthenticated user is redirected to login
+        expected: #/login
+        actual:   #/login
+[PASS] TC-02 Empty login shows validation error
+        expected: Please enter your email and password.
+        actual:   Please enter your email and password.
+[PASS] TC-03 Malformed email is rejected
+        expected: Please enter a valid email address.
+        actual:   Please enter a valid email address.
+[PASS] TC-04 Wrong password is rejected
+        expected: Incorrect email or password.
+        actual:   Incorrect email or password.
+[PASS] TC-05 Forgot password shows simulated confirmation
+        expected: True
+        actual:   True
+[PASS] TC-06 Valid login opens the dashboard
+        expected: #/dashboard
+        actual:   #/dashboard
+[PASS] TC-07 Dashboard: consumed + remaining = goal
+        expected: 2000
+        actual:   2000
+[PASS] TC-08 Search 'chicken' returns 4 results
+        expected: 4
+        actual:   4
+[PASS] TC-09 Category 'Fruits' shows 6 results
+        expected: 6
+        actual:   6
+[PASS] TC-10 Unknown food shows empty state
+        expected: True
+        actual:   True
+[PASS] TC-11 Food details show name, serving, kcal and macros
+        expected: {'name': 'Banana', 'serving': '1 medium (118 g)', 'kcal': '105', 'protein': '1.3g', 'carbs': '27g', 'fat': '0.4g'}
+        actual:   {'name': 'Banana', 'serving': '1 medium (118 g)', 'kcal': '105', 'protein': '1.3g', 'carbs': '27g', 'fat': '0.4g'}
+[PASS] TC-12 2 servings recalculates calories to 210
+        expected: 210
+        actual:   210
+[PASS] TC-13 Adding meal increases consumed by 210
+        expected: 567
+        actual:   567
+[PASS] TC-14 Remaining calories decrease by 210
+        expected: 1433
+        actual:   1433
+[PASS] TC-15 Removing the meal restores consumed calories
+        expected: 357
+        actual:   357
+[PASS] TC-16 History opens on current week
+        expected: True
+        actual:   True
+[PASS] TC-17 Previous week shows 7 days of meal history
+        expected: 7
+        actual:   7
+[PASS] TC-18 Goal below 1000 is rejected
+        expected: True
+        actual:   True
+[PASS] TC-19 New goal (2,500) appears on dashboard
+        expected: 2500
+        actual:   2500
+[PASS] TC-20 Remaining recalculates against new goal
+        expected: 2143
+        actual:   2143
+[PASS] TC-21 Data persists after page reload (localStorage)
+        expected: 2500
+        actual:   2500
+[PASS] TC-22 Logout returns to login screen
+        expected: #/login
+        actual:   #/login
+================================================================
+System tests: 23/23 checks passed

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<!--
+  ECTS — Automated unit test runner
+  Open this file in a browser (or serve the project folder) to run the
+  test suite against the business logic in ../app.js.
+  Tests use a separate storage prefix so they never touch real app data.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ECTS · Unit Tests</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #12392C; color: #F3EFE6; margin: 0; padding: 24px; }
+    h1 { margin: 0 0 4px; }
+    .summary { margin: 8px 0 20px; font-size: 18px; }
+    .summary b.pass { color: #B6F23A; } .summary b.fail { color: #ff8a7a; }
+    table { width: 100%; border-collapse: collapse; background: #F3EFE6; color: #12392C; border-radius: 12px; overflow: hidden; font-size: 14px; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #e1dbcd; vertical-align: top; }
+    th { background: #B6F23A; }
+    td.pass { color: #2c7a14; font-weight: 700; } td.fail { color: #b3261e; font-weight: 700; }
+    code { font-size: 12px; }
+  </style>
+  <script>window.ECTS_STORAGE_PREFIX = 'ects.test.';</script>
+  <script src="../app.js"></script>
+</head>
+<body>
+  <h1>ECTS Unit Tests</h1>
+  <p class="summary" id="summary">Running…</p>
+  <table>
+    <thead><tr><th>ID</th><th>Module</th><th>Test case</th><th>Expected</th><th>Actual</th><th>Result</th></tr></thead>
+    <tbody id="results"></tbody>
+  </table>
+
+  <script>
+    (function () {
+      'use strict';
+      const { Validator, Auth, Storage, FoodService, Nutrition, MealService, MealRepository,
+              UserRepository, DateUtil, seedDemoData, escapeHtml, CONFIG } = window.ECTS;
+
+      const results = [];
+      let counter = 0;
+
+      /** Register and run a test. `fn` returns the actual value. */
+      function test(module, name, expected, fn) {
+        counter += 1;
+        const id = `UT-${String(counter).padStart(2, '0')}`;
+        let actual;
+        try { actual = fn(); } catch (e) { actual = `Error: ${e.message}`; }
+        const pass = JSON.stringify(actual) === JSON.stringify(expected);
+        results.push({ id, module, name, expected, actual, pass });
+      }
+
+      // Fresh, isolated data for every run
+      Storage.clearAll();
+      seedDemoData();
+      const demo = UserRepository.findByEmail(CONFIG.DEMO_ACCOUNT.email);
+
+      /* ---- Validation ---- */
+      test('Validator', 'Accepts a well-formed email', true, () => Validator.isEmail('user@uni.ac.ae'));
+      test('Validator', 'Rejects email without @', false, () => Validator.isEmail('user.uni.ac.ae'));
+      test('Validator', 'Rejects email without domain suffix', false, () => Validator.isEmail('user@uni'));
+      test('Validator', 'Goal 2000 is valid', true, () => Validator.isValidGoal(2000));
+      test('Validator', 'Goal 999 is below minimum', false, () => Validator.isValidGoal(999));
+      test('Validator', 'Goal 5001 is above maximum', false, () => Validator.isValidGoal(5001));
+      test('Validator', 'Goal 1800.5 (non-integer) is invalid', false, () => Validator.isValidGoal(1800.5));
+      test('Validator', 'Servings 0 is invalid', false, () => Validator.isValidServings(0));
+
+      /* ---- Authentication ---- */
+      test('Auth', 'Login with demo credentials succeeds', true, () => Auth.login('demo@ects.app', 'demo123').ok);
+      test('Auth', 'Session returns the logged-in user', 'demo@ects.app', () => Auth.currentUser().email);
+      test('Auth', 'Email lookup is case-insensitive', true, () => Auth.login('DEMO@ects.app', 'demo123').ok);
+      test('Auth', 'Wrong password is rejected', 'Incorrect email or password.', () => Auth.login('demo@ects.app', 'wrong').error);
+      test('Auth', 'Unknown account is rejected', 'Incorrect email or password.', () => Auth.login('nobody@ects.app', 'demo123').error);
+      test('Auth', 'Empty fields are rejected', 'Please enter your email and password.', () => Auth.login('', '').error);
+      test('Auth', 'Malformed email is rejected', 'Please enter a valid email address.', () => Auth.login('demo', 'demo123').error);
+      test('Auth', 'Logout clears the session', null, () => { Auth.logout(); return Auth.currentUser(); });
+      test('Auth', 'Password reset accepts valid email (simulated)', true, () => Auth.requestPasswordReset('demo@ects.app').ok);
+
+      /* ---- Food search ---- */
+      test('FoodService', 'Search "chicken" returns 4 foods', 4, () => FoodService.search('chicken').length);
+      test('FoodService', 'Search is case-insensitive', 4, () => FoodService.search('CHICKEN').length);
+      test('FoodService', 'Prefix matches rank first ("rice")', 'Brown Rice (cooked)', () => FoodService.search('rice')[0].name);
+      test('FoodService', 'Category filter "Fruits" returns 6 foods', 6, () => FoodService.search('', 'Fruits').length);
+      test('FoodService', 'Query + category combined ("milk" in Dairy)', ['Low-Fat Milk'], () => FoodService.search('milk', 'Dairy').map(f => f.name));
+      test('FoodService', 'No match returns empty list', 0, () => FoodService.search('xyz123').length);
+      test('FoodService', 'Get food by id', 'Banana', () => FoodService.getById('banana').name);
+
+      /* ---- Nutrition calculations ---- */
+      const banana = FoodService.getById('banana');
+      test('Nutrition', 'Scale 2 servings of banana', { calories: 210, protein: 2.6, carbs: 54, fat: 0.8, fiber: 6.2, sugar: 28 }, () => Nutrition.scale(banana, 2));
+      test('Nutrition', 'Scale 0.5 serving of banana (calories)', 53, () => Nutrition.scale(banana, 0.5).calories);
+      test('Nutrition', 'Totals of two entries', { calories: 300, protein: 30, carbs: 20, fat: 10 },
+        () => Nutrition.totals([{ calories: 100, protein: 10, carbs: 5, fat: 4 }, { calories: 200, protein: 20, carbs: 15, fat: 6 }]));
+      test('Nutrition', 'Macro targets for 2000 kcal', { protein: 125, carbs: 250, fat: 56 }, () => Nutrition.macroTargets(2000));
+      test('Nutrition', 'Remaining calories 2000 − 1450', 550, () => Nutrition.remaining(2000, 1450));
+      test('Nutrition', 'Remaining is negative when over goal', -200, () => Nutrition.remaining(2000, 2200));
+      test('Nutrition', 'Goal percent 1500/2000', 75, () => Nutrition.percent(1500, 2000));
+      test('Nutrition', 'Macro split sums to 100%', 100, () => { const s = Nutrition.macroSplit({ protein: 31, carbs: 45, fat: 9 }); return s.protein + s.carbs + s.fat; });
+      test('Nutrition', 'Macro split of empty day is all zero', { protein: 0, carbs: 0, fat: 0 }, () => Nutrition.macroSplit({ protein: 0, carbs: 0, fat: 0 }));
+      test('Nutrition', 'Day status: 1000/2000 is "under"', 'under', () => Nutrition.dayStatus(1000, 2000));
+      test('Nutrition', 'Day status: 2000/2000 is "on-target"', 'on-target', () => Nutrition.dayStatus(2000, 2000));
+      test('Nutrition', 'Day status: 2400/2000 is "over"', 'over', () => Nutrition.dayStatus(2400, 2000));
+
+      /* ---- Meal logging ---- */
+      const today = DateUtil.todayKey();
+      const before = MealService.dayTotals(demo.id, today).calories;
+      test('MealService', 'Add 1 apple to Snack succeeds', true,
+        () => MealService.addMeal({ userId: demo.id, foodId: 'apple', servings: 1, mealType: 'Snack' }).ok);
+      test('MealService', "Today's calories increase by 95 after adding apple", before + 95,
+        () => MealService.dayTotals(demo.id, today).calories);
+      test('MealService', 'Unknown food is rejected', 'Food not found.',
+        () => MealService.addMeal({ userId: demo.id, foodId: 'pizza-xl', servings: 1, mealType: 'Lunch' }).error);
+      test('MealService', 'Invalid servings are rejected', false,
+        () => MealService.addMeal({ userId: demo.id, foodId: 'apple', servings: 0, mealType: 'Lunch' }).ok);
+      test('MealService', 'Invalid meal type is rejected', false,
+        () => MealService.addMeal({ userId: demo.id, foodId: 'apple', servings: 1, mealType: 'Brunch' }).ok);
+      test('MealService', 'Removing a meal restores the total', before, () => {
+        const apple = MealRepository.forDate(demo.id, today).find(m => m.foodId === 'apple' && m.mealType === 'Snack');
+        MealService.removeMeal(apple.id);
+        return MealService.dayTotals(demo.id, today).calories;
+      });
+      test('MealService', 'Meal type suggestion at 08:00 is Breakfast', 'Breakfast', () => MealService.suggestMealType(new Date(2026, 10, 21, 8)));
+      test('MealService', 'Meal type suggestion at 19:00 is Dinner', 'Dinner', () => MealService.suggestMealType(new Date(2026, 10, 21, 19)));
+
+      /* ---- History / dates ---- */
+      test('DateUtil', 'Week starts on Monday (Sat 21 Nov 2026 → Mon 16 Nov)', '2026-11-16',
+        () => DateUtil.toKey(DateUtil.startOfWeek(new Date(2026, 10, 21))));
+      test('DateUtil', 'Week has 7 days', 7, () => DateUtil.weekDates(0).length);
+      test('History', 'Demo data has 13 past days of meals', 13, () => {
+        const keys = new Set(MealRepository.forUser(demo.id).map(m => m.date).filter(k => k < today));
+        return keys.size;
+      });
+      test('History', 'Day summaries return 7 entries for a week', 7, () => MealService.daySummaries(demo.id, DateUtil.weekDates(-1), 2000).length);
+
+      /* ---- Profile ---- */
+      test('Profile', 'Saving a new daily goal persists', 2200, () => {
+        UserRepository.save({ ...demo, dailyGoal: 2200 });
+        return UserRepository.findById(demo.id).dailyGoal;
+      });
+
+      /* ---- Security ---- */
+      test('Security', 'HTML in user input is escaped', '&lt;img src=x onerror=&quot;alert(1)&quot;&gt;', () => escapeHtml('<img src=x onerror="alert(1)">'));
+
+      // Clean up test storage
+      Storage.clearAll();
+
+      /* ---- Render results ---- */
+      const passed = results.filter(r => r.pass).length;
+      const failed = results.length - passed;
+      document.getElementById('summary').innerHTML =
+        `<b class="pass">${passed} passed</b> · <b class="${failed ? 'fail' : 'pass'}">${failed} failed</b> · ${results.length} total`;
+      document.getElementById('results').innerHTML = results.map(r => `
+        <tr>
+          <td>${r.id}</td><td>${r.module}</td><td>${escapeHtml(r.name)}</td>
+          <td><code>${escapeHtml(JSON.stringify(r.expected))}</code></td>
+          <td><code>${escapeHtml(JSON.stringify(r.actual))}</code></td>
+          <td class="${r.pass ? 'pass' : 'fail'}">${r.pass ? 'PASS' : 'FAIL'}</td>
+        </tr>`).join('');
+
+      // Expose for headless runners
+      window.__ECTS_TEST_RESULTS__ = { passed, failed, total: results.length, results };
+    })();
+  </script>
+</body>
+</html>
