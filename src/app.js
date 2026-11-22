@@ -62,12 +62,14 @@
     { id: 'carrot', name: 'Carrot', category: 'Vegetables', serving: '1 medium (61 g)', calories: 25, protein: 0.6, carbs: 6, fat: 0.1, fiber: 1.7, sugar: 2.9 },
     { id: 'spinach', name: 'Spinach', category: 'Vegetables', serving: '1 cup raw (30 g)', calories: 7, protein: 0.9, carbs: 1.1, fat: 0.1, fiber: 0.7, sugar: 0.1 },
     { id: 'cucumber', name: 'Cucumber', category: 'Vegetables', serving: '1 cup sliced (104 g)', calories: 16, protein: 0.7, carbs: 3.8, fat: 0.1, fiber: 0.5, sugar: 1.7 },
+    { id: 'garden-salad', name: 'Garden Salad', category: 'Vegetables', serving: '1 bowl (150 g)', calories: 90, protein: 2.5, carbs: 9, fat: 5.5, fiber: 3.2, sugar: 4.5 },
     { id: 'sweet-potato', name: 'Sweet Potato (baked)', category: 'Vegetables', serving: '1 medium (130 g)', calories: 112, protein: 2, carbs: 26, fat: 0.1, fiber: 3.9, sugar: 5.4 },
 
     // Proteins
     { id: 'chicken-breast', name: 'Grilled Chicken Breast', category: 'Proteins', serving: '100 g', calories: 165, protein: 31, carbs: 0, fat: 3.6, fiber: 0, sugar: 0 },
     { id: 'egg', name: 'Boiled Egg', category: 'Proteins', serving: '1 large (50 g)', calories: 78, protein: 6.3, carbs: 0.6, fat: 5.3, fiber: 0, sugar: 0.6 },
     { id: 'salmon', name: 'Salmon Fillet', category: 'Proteins', serving: '100 g', calories: 208, protein: 20, carbs: 0, fat: 13, fiber: 0, sugar: 0 },
+    { id: 'grilled-fish', name: 'Grilled Fish', category: 'Proteins', serving: '1 fillet (150 g)', calories: 177, protein: 37.5, carbs: 0, fat: 2, fiber: 0, sugar: 0 },
     { id: 'tuna', name: 'Tuna (in water)', category: 'Proteins', serving: '100 g', calories: 116, protein: 26, carbs: 0, fat: 0.8, fiber: 0, sugar: 0 },
     { id: 'beef', name: 'Lean Beef', category: 'Proteins', serving: '100 g', calories: 250, protein: 26, carbs: 0, fat: 15, fiber: 0, sugar: 0 },
     { id: 'lentils', name: 'Lentils (cooked)', category: 'Proteins', serving: '1 cup (198 g)', calories: 230, protein: 18, carbs: 40, fat: 0.8, fiber: 15.6, sugar: 3.6 },
@@ -447,7 +449,7 @@
      * Log `servings` of a food for a user on a date.
      * Returns { ok, entry } or { ok:false, error }.
      */
-    addMeal({ userId, foodId, servings, mealType, date = DateUtil.todayKey() }) {
+    addMeal({ userId, foodId, servings, mealType, date = DateUtil.todayKey(), source = 'search' }) {
       const food = FoodService.getById(foodId);
       if (!food) return { ok: false, error: 'Food not found.' };
       if (!Validator.isValidServings(servings)) return { ok: false, error: 'Servings must be between 0.5 and 10.' };
@@ -462,6 +464,7 @@
         name: food.name,
         serving: food.serving,
         servings,
+        source, // how the meal was logged: 'search' | 'scan'
         ...Nutrition.scale(food, servings),
         createdAt: Date.now()
       };
@@ -492,6 +495,130 @@
       if (h < 16) return 'Lunch';
       if (h < 21) return 'Dinner';
       return 'Snack';
+    }
+  };
+
+  /* ==========================================================================
+     5b. SCAN FOOD — SIMULATED FOOD RECOGNITION
+     No AI model or external API is used. The "recognizer" is deterministic:
+       1. A built-in sample plate maps directly to its known contents.
+       2. Otherwise, food keywords in the uploaded file name are detected
+          (e.g. "chicken_rice.jpg" → Chicken Breast + White Rice).
+       3. Otherwise, the image's average colour picks the closest demo plate
+          (yellow → banana, red → apple, green → salad, …).
+     Results always reference FOOD_DATABASE, so they log like any other meal.
+     ========================================================================== */
+
+  /** File-name keywords → [foodId, estimated servings]. */
+  const SCAN_KEYWORDS = Object.freeze({
+    chicken: ['chicken-breast', 1.5],
+    rice: ['white-rice', 1],
+    salad: ['garden-salad', 1],
+    apple: ['apple', 1],
+    banana: ['banana', 1],
+    fish: ['grilled-fish', 1],
+    hammour: ['grilled-fish', 1],
+    salmon: ['grilled-fish', 1],
+    pasta: ['pasta', 1.5],
+    spaghetti: ['pasta', 1.5],
+    penne: ['pasta', 1.5]
+  });
+
+  /** Demo plates the recognizer can return (also used as sample images). */
+  const SCAN_DATASET = Object.freeze({
+    'chicken-rice-plate': { label: 'Chicken & Rice Plate', items: [['chicken-breast', 1.5], ['white-rice', 1], ['garden-salad', 0.5]] },
+    'grilled-fish-plate': { label: 'Grilled Fish Plate', items: [['grilled-fish', 1], ['white-rice', 0.5], ['garden-salad', 1]] },
+    'pasta-bowl': { label: 'Pasta Bowl', items: [['pasta', 1.5]] },
+    'salad-bowl': { label: 'Salad Bowl', items: [['garden-salad', 1.5]] },
+    apple: { label: 'Apple', items: [['apple', 1]] },
+    banana: { label: 'Banana', items: [['banana', 1]] }
+  });
+
+  /** Small deterministic string hash (djb2) for stable "confidence" values. */
+  function hashString(str) {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0;
+    return h;
+  }
+
+  const FoodRecognizer = {
+    /** Foods whose keyword appears in the file name (deduplicated). */
+    fromFileName(fileName = '') {
+      const name = String(fileName).toLowerCase();
+      const found = [];
+      Object.entries(SCAN_KEYWORDS).forEach(([keyword, [foodId, servings]]) => {
+        if (name.includes(keyword) && !found.some((f) => f.foodId === foodId)) {
+          found.push({ foodId, servings });
+        }
+      });
+      return found;
+    },
+
+    /** Map an average RGB colour to the closest demo plate. */
+    classifyColor({ r, g, b }) {
+      const brightness = (r + g + b) / 3;
+      if (r > 150 && g > 130 && b < 110 && Math.abs(r - g) < 60) return 'banana';     // yellow
+      if (r > 140 && r > g * 1.4 && r > b * 1.4) return 'apple';                       // red
+      if (g > r && g > b) return 'salad-bowl';                                         // green
+      if (r > g && g > b && brightness >= 150) return 'grilled-fish-plate';            // light orange
+      if (r > g && g > b && brightness < 150) return 'pasta-bowl';                     // brown / tomato sauce
+      return 'chicken-rice-plate';                                                     // neutral / mixed
+    },
+
+    /**
+     * Simulate recognising the foods in an image.
+     * @param {{sampleId?:string, fileName?:string, avgColor?:{r,g,b}}} input
+     * @returns {{label:string, method:string, items:Array}}
+     */
+    analyze({ sampleId = null, fileName = '', avgColor = null } = {}) {
+      let method;
+      let key = null;
+      let items = null;
+
+      if (sampleId && SCAN_DATASET[sampleId]) {
+        method = 'sample';
+        key = sampleId;
+      } else {
+        const fromName = FoodRecognizer.fromFileName(fileName);
+        if (fromName.length) {
+          method = 'filename';
+          items = fromName;
+        } else if (avgColor) {
+          method = 'color';
+          key = FoodRecognizer.classifyColor(avgColor);
+        } else {
+          method = 'default';
+          key = 'chicken-rice-plate';
+        }
+      }
+
+      if (!items) items = SCAN_DATASET[key].items.map(([foodId, servings]) => ({ foodId, servings }));
+      const seed = sampleId || fileName || key;
+
+      const detected = items.map((it) => {
+        const food = FoodService.getById(it.foodId);
+        return {
+          foodId: it.foodId,
+          name: food.name,
+          serving: food.serving,
+          servings: it.servings,
+          confidence: 84 + (hashString(seed + it.foodId) % 14), // 84–97 %
+          included: true
+        };
+      });
+
+      return {
+        label: key ? SCAN_DATASET[key].label : detected.map((d) => d.name).join(' & '),
+        method,
+        items: detected
+      };
+    },
+
+    /** Combined nutrition for the items the user kept. */
+    totals(items) {
+      return Nutrition.totals(
+        items.filter((i) => i.included).map((i) => Nutrition.scale(FoodService.getById(i.foodId), i.servings))
+      );
     }
   };
 
@@ -555,7 +682,9 @@
     searchQuery: '',
     searchCategory: 'All',
     historyWeekOffset: 0,
-    food: { id: null, servings: 1, mealType: 'Breakfast' }
+    food: { id: null, servings: 1, mealType: 'Breakfast' },
+    // Scan Food screen: image source, analysis status and detected items
+    scan: { imageUrl: null, fileName: '', sampleId: null, avgColor: null, status: 'idle', result: null, mealType: null, token: 0 }
   };
 
   const MACRO_COLORS = {
@@ -664,7 +793,7 @@
             ${items.map((m) => `
               <div class="meal-item">
                 <div class="meal-item__info">
-                  <div class="meal-item__name">${escapeHtml(m.name)}</div>
+                  <div class="meal-item__name">${escapeHtml(m.name)}${m.source === 'scan' ? '<span class="tag-scan">Scanned</span>' : ''}</div>
                   <div class="meal-item__sub">${Format.servings(m.servings)} × ${escapeHtml(m.serving)} · P ${Format.grams(m.protein)} · C ${Format.grams(m.carbs)} · F ${Format.grams(m.fat)}</div>
                 </div>
                 <div class="meal-item__kcal">${Format.kcal(m.calories)} kcal</div>
@@ -1356,6 +1485,358 @@
     }
   };
 
+  /* ---- Screen: Scan Food ------------------------------------------------- */
+
+  /**
+   * Illustrated sample plates (inline SVG → data URI) so the feature can be
+   * demonstrated without a real photo. Each id matches a SCAN_DATASET entry.
+   */
+  const SAMPLE_PLATES = (() => {
+    const plate = (inner, bg = '#E9DFC9') => `
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+        <rect width="120" height="120" fill="${bg}"/>
+        <circle cx="60" cy="60" r="50" fill="#D9D4CA"/><circle cx="60" cy="60" r="44" fill="#FFFFFF"/>
+        ${inner}
+      </svg>`;
+    const svgs = {
+      'chicken-rice-plate': plate(`
+        <g fill="#FBF8F0" stroke="#E6DFD0" stroke-width="1">
+          <circle cx="42" cy="66" r="9"/><circle cx="52" cy="72" r="9"/><circle cx="38" cy="76" r="8"/><circle cx="48" cy="60" r="8"/></g>
+        <g fill="#C98B4A"><rect x="62" y="56" width="26" height="12" rx="6" transform="rotate(-20 75 62)"/>
+          <rect x="64" y="70" width="26" height="12" rx="6" transform="rotate(-20 77 76)"/></g>
+        <g stroke="#8A5427" stroke-width="2" stroke-linecap="round"><path d="M68 62l6-6M76 60l6-6M70 77l6-6M78 75l6-6"/></g>
+        <g fill="#6DBE45"><circle cx="58" cy="36" r="7"/><circle cx="68" cy="38" r="6"/><circle cx="50" cy="40" r="5"/></g>
+        <circle cx="62" cy="34" r="3" fill="#E5483B"/>`),
+      'grilled-fish-plate': plate(`
+        <ellipse cx="62" cy="64" rx="28" ry="13" fill="#F0B27A" transform="rotate(-12 62 64)"/>
+        <g stroke="#B8703A" stroke-width="2" stroke-linecap="round"><path d="M46 70l8-10M56 70l8-10M66 68l8-10M76 66l6-8"/></g>
+        <path d="M80 34a12 12 0 0 1 0 18z" fill="#F7D13A"/>
+        <g fill="#6DBE45"><circle cx="40" cy="42" r="7"/><circle cx="50" cy="36" r="6"/><circle cx="36" cy="52" r="5"/></g>
+        <g fill="#FBF8F0" stroke="#E6DFD0"><circle cx="52" cy="86" r="6"/><circle cx="62" cy="88" r="6"/></g>`),
+      'pasta-bowl': plate(`
+        <g fill="none" stroke="#EBC45A" stroke-width="5" stroke-linecap="round">
+          <path d="M34 58c8-10 16 8 24-2s16 8 24-2"/><path d="M32 70c8-10 16 8 24-2s16 8 26-2"/><path d="M38 82c8-10 16 8 24-2s12 6 18 0"/></g>
+        <circle cx="62" cy="64" r="14" fill="#C8432F" opacity="0.9"/>
+        <g fill="#5BA83A"><ellipse cx="58" cy="58" rx="5" ry="3"/><ellipse cx="68" cy="66" rx="5" ry="3"/></g>`),
+      'salad-bowl': plate(`
+        <g fill="#6DBE45"><circle cx="46" cy="50" r="12"/><circle cx="66" cy="46" r="12"/><circle cx="74" cy="66" r="12"/><circle cx="52" cy="72" r="12"/><circle cx="60" cy="60" r="10"/></g>
+        <g fill="#4E9A2E"><circle cx="40" cy="64" r="7"/><circle cx="78" cy="52" r="6"/></g>
+        <g fill="#E5483B"><circle cx="56" cy="52" r="5"/><circle cx="70" cy="74" r="5"/><circle cx="44" cy="78" r="4"/></g>
+        <g fill="#F4F1E6"><circle cx="66" cy="58" r="3"/><circle cx="50" cy="62" r="3"/></g>`),
+      apple: `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+          <rect width="120" height="120" fill="#F3EFE6"/>
+          <path d="M60 40c-6-6-26-6-30 14s10 38 22 38c4 0 6-2 8-2s4 2 8 2c12 0 26-18 22-38S66 34 60 40z" fill="#D9342B"/>
+          <path d="M44 50c-4 4-6 12-4 20" stroke="#F28A80" stroke-width="4" fill="none" stroke-linecap="round"/>
+          <path d="M60 40c0-8 2-12 6-16" stroke="#6B4423" stroke-width="4" fill="none" stroke-linecap="round"/>
+          <path d="M64 30c6-8 16-8 18-6-4 6-10 10-18 6z" fill="#5BA83A"/>
+        </svg>`,
+      banana: `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+          <rect width="120" height="120" fill="#F3EFE6"/>
+          <path d="M24 44c10 34 44 50 74 34 4-2 2-8-2-7-26 8-52-6-62-30-2-4-12-2-10 3z" fill="#F5CF3A"/>
+          <path d="M30 48c12 26 38 38 62 30" stroke="#D9A91F" stroke-width="3" fill="none" stroke-linecap="round"/>
+          <path d="M24 44l-4-6 6-2 4 5z" fill="#6B4423"/>
+        </svg>`
+    };
+    return Object.fromEntries(
+      Object.entries(svgs).map(([id, svg]) => [id, `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg.trim())}`])
+    );
+  })();
+
+  /** Average colour of an image (downscaled to 24×24 on a canvas). */
+  function averageImageColor(img) {
+    try {
+      const size = 24;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, size, size);
+      const data = ctx.getImageData(0, 0, size, size).data;
+      let r = 0, g = 0, b = 0;
+      for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; }
+      const n = data.length / 4;
+      return { r: Math.round(r / n), g: Math.round(g / n), b: Math.round(b / n) };
+    } catch (e) {
+      return null; // canvas unavailable → recognizer falls back to default plate
+    }
+  }
+
+  const SCAN_METHOD_LABEL = {
+    sample: 'Sample plate',
+    filename: 'Matched from image details',
+    color: 'Matched by colour profile',
+    default: 'Best guess'
+  };
+  const MAX_UPLOAD_MB = 10;
+
+  const ScanView = {
+    render(user) {
+      const st = UIState.scan;
+      if (!st.mealType) st.mealType = MealService.suggestMealType();
+      const analyzing = st.status === 'analyzing';
+
+      $('#scan-content').innerHTML = `
+        <div class="scan-layout">
+          <div class="col">
+            <!-- Upload + preview + analyze -->
+            <article class="card" aria-labelledby="scan-upload-title">
+              <h2 class="section-title visually-hidden" id="scan-upload-title">Food image</h2>
+              <div class="scan-preview${analyzing ? ' is-scanning' : ''}" data-testid="scan-preview">
+                ${st.imageUrl
+                  ? `<img src="${st.imageUrl}" alt="Preview of the selected food image">`
+                  : `<div class="scan-preview__placeholder">
+                       <svg viewBox="0 0 24 24" width="44" height="44" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                       <span>No image selected</span>
+                       <small>Upload a photo or try a sample plate</small>
+                     </div>`}
+                <span class="scan-preview__corner scan-preview__corner--tl"></span>
+                <span class="scan-preview__corner scan-preview__corner--tr"></span>
+                <span class="scan-preview__corner scan-preview__corner--bl"></span>
+                <span class="scan-preview__corner scan-preview__corner--br"></span>
+                ${analyzing ? '<div class="scan-preview__beam" aria-hidden="true"></div>' : ''}
+              </div>
+              ${st.fileName ? `<p class="scan-file-name">${escapeHtml(st.fileName)}</p>` : ''}
+              <div class="scan-actions">
+                <button type="button" class="btn btn--ghost btn--block" data-action="upload" data-testid="upload-image" ${analyzing ? 'disabled' : ''}>
+                  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 20h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  ${st.imageUrl ? 'Change Image' : 'Upload Food Image'}
+                </button>
+                <button type="button" class="btn btn--primary btn--block btn--lg" data-action="analyze" data-testid="analyze-food" ${!st.imageUrl || analyzing ? 'disabled' : ''}>
+                  ${analyzing ? 'Analyzing…' : 'Analyze Food'}
+                </button>
+              </div>
+            </article>
+
+            <!-- Sample plates for demonstrations -->
+            <article class="card" aria-labelledby="sample-title">
+              <div class="card__header">
+                <h2 class="section-title" id="sample-title">Try a sample plate</h2>
+                <span class="card__meta">For demos</span>
+              </div>
+              <div class="sample-grid">
+                ${Object.entries(SCAN_DATASET).map(([id, plate]) => `
+                  <button type="button" class="sample-btn${st.sampleId === id ? ' is-active' : ''}" data-sample="${id}" ${analyzing ? 'disabled' : ''}>
+                    <img src="${SAMPLE_PLATES[id]}" alt="">
+                    ${escapeHtml(plate.label)}
+                  </button>`).join('')}
+              </div>
+            </article>
+          </div>
+
+          <div class="col">
+            ${ScanView.resultsHtml(user)}
+          </div>
+        </div>`;
+    },
+
+    /** Results card: empty state, loading skeleton, or detected foods. */
+    resultsHtml(user) {
+      const st = UIState.scan;
+
+      if (st.status === 'analyzing') {
+        return `
+          <article class="card" aria-busy="true">
+            <h2 class="section-title">Analyzing your plate…</h2>
+            <p class="muted">Detecting foods and estimating portions</p>
+            <div class="skeleton"></div><div class="skeleton" style="width:80%"></div><div class="skeleton" style="width:60%"></div>
+          </article>`;
+      }
+
+      if (st.status !== 'done' || !st.result) {
+        return `
+          <article class="card" aria-labelledby="scan-how-title">
+            <h2 class="section-title" id="scan-how-title">How it works</h2>
+            <ol class="scan-steps">
+              <li>Upload a photo of your meal or pick a sample plate</li>
+              <li>Tap <strong>Analyze Food</strong> to identify the foods</li>
+              <li>Check the portions, then <strong>Add To Meal</strong></li>
+            </ol>
+          </article>`;
+      }
+
+      const { result, mealType } = st;
+      const totals = FoodRecognizer.totals(result.items);
+      const included = result.items.filter((i) => i.included).length;
+      const after = MealService.dayTotals(user.id, DateUtil.todayKey()).calories + totals.calories;
+
+      return `
+        <article class="card" aria-labelledby="scan-result-title" data-testid="scan-results">
+          <h2 class="section-title" id="scan-result-title">Scan Results</h2>
+          <div class="detected-label" data-testid="scan-label">${escapeHtml(result.label)}</div>
+          <p class="detected-meta">${result.items.length} food${result.items.length === 1 ? '' : 's'} detected · ${SCAN_METHOD_LABEL[result.method]}</p>
+
+          ${result.items.map((item, index) => {
+            const n = Nutrition.scale(FoodService.getById(item.foodId), item.servings);
+            return `
+              <div class="detected-item${item.included ? '' : ' is-excluded'}" data-testid="detected-item">
+                <input type="checkbox" class="detected-item__check" data-toggle-item="${index}" ${item.included ? 'checked' : ''}
+                  aria-label="Include ${escapeHtml(item.name)}">
+                <div class="detected-item__info">
+                  <div class="detected-item__name">${escapeHtml(item.name)} <span class="badge badge--confidence">${item.confidence}% match</span></div>
+                  <div class="detected-item__sub">P ${Format.grams(n.protein)} · C ${Format.grams(n.carbs)} · F ${Format.grams(n.fat)}</div>
+                  <div class="mini-stepper" role="group" aria-label="Portion of ${escapeHtml(item.name)}">
+                    <button type="button" data-portion="${index}" data-delta="-1" aria-label="Decrease portion">−</button>
+                    <span>${Format.servings(item.servings)} × ${escapeHtml(item.serving.split(' (')[0])}</span>
+                    <button type="button" data-portion="${index}" data-delta="1" aria-label="Increase portion">+</button>
+                  </div>
+                </div>
+                <div class="detected-item__kcal">${n.calories} kcal</div>
+              </div>`;
+          }).join('')}
+
+          <div class="scan-totals">
+            <div class="scan-totals__kcal">
+              <strong data-testid="scan-calories">${Format.kcal(totals.calories)}</strong>
+              <span>total calories</span>
+            </div>
+            <div class="macro-grid">
+              <div class="macro-tile" style="--tile-color:${MACRO_COLORS.protein}">
+                <div class="macro-tile__value" data-testid="scan-protein">${Format.grams(totals.protein)}</div><div class="macro-tile__label">Protein</div>
+              </div>
+              <div class="macro-tile" style="--tile-color:${MACRO_COLORS.carbs}">
+                <div class="macro-tile__value" data-testid="scan-carbs">${Format.grams(totals.carbs)}</div><div class="macro-tile__label">Carbohydrates</div>
+              </div>
+              <div class="macro-tile" style="--tile-color:${MACRO_COLORS.fat}">
+                <div class="macro-tile__value" data-testid="scan-fat">${Format.grams(totals.fat)}</div><div class="macro-tile__label">Fat</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="field__label" id="scan-mealtype-label">Meal</span>
+            <div class="segmented" role="radiogroup" aria-labelledby="scan-mealtype-label">
+              ${CONFIG.MEAL_TYPES.map((t) => `
+                <button type="button" class="segmented__btn${t === mealType ? ' is-active' : ''}" role="radio"
+                  aria-checked="${t === mealType}" data-scan-meal-type="${t}">${t}</button>`).join('')}
+            </div>
+          </div>
+
+          <p class="field__hint">Today after adding: <strong>${Format.kcal(after)}</strong> / ${Format.kcal(user.dailyGoal)} kcal</p>
+
+          <button type="button" class="btn btn--primary btn--block btn--lg" data-action="scan-add" data-testid="scan-add-to-meal"
+            style="margin-top:var(--space-4)" ${included ? '' : 'disabled'}>
+            Add To Meal · ${Format.kcal(totals.calories)} kcal
+          </button>
+
+          <p class="scan-note" data-testid="scan-note">
+            <strong>Prototype Demonstration:</strong> Food recognition results are simulated for academic purposes.
+          </p>
+        </article>`;
+    },
+
+    /** Set a new image source and clear any previous result. */
+    setImage({ imageUrl, fileName = '', sampleId = null, avgColor = null }) {
+      const st = UIState.scan;
+      if (st.imageUrl && st.imageUrl.startsWith('blob:')) URL.revokeObjectURL(st.imageUrl);
+      Object.assign(st, { imageUrl, fileName, sampleId, avgColor, status: 'idle', result: null });
+      st.token += 1; // cancels any analysis still running
+      Router.refresh();
+    },
+
+    /** Validate and load a user-selected image file. */
+    handleFile(file) {
+      if (!file) return;
+      if (!file.type.startsWith('image/')) return showToast('Please choose an image file (JPG, PNG, HEIC…).', 'error');
+      if (file.size > MAX_UPLOAD_MB * 1024 * 1024) return showToast(`Image is larger than ${MAX_UPLOAD_MB} MB.`, 'error');
+
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => ScanView.setImage({ imageUrl: url, fileName: file.name, avgColor: averageImageColor(img) });
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        showToast('This image could not be opened. Try a JPG or PNG.', 'error');
+      };
+      img.src = url;
+    },
+
+    /** Run the simulated recognizer after a short "processing" delay. */
+    analyze() {
+      const st = UIState.scan;
+      if (!st.imageUrl || st.status === 'analyzing') return;
+      st.status = 'analyzing';
+      const token = ++st.token;
+      Router.refresh();
+
+      setTimeout(() => {
+        if (token !== st.token) return; // image changed meanwhile
+        st.result = FoodRecognizer.analyze({ sampleId: st.sampleId, fileName: st.fileName, avgColor: st.avgColor });
+        st.status = 'done';
+        if (Router.parse().name === 'scan') {
+          Router.refresh();
+          // On phones the results card sits below the image — bring it into view
+          $('[data-testid="scan-results"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 1400);
+    },
+
+    /** Log every included item as a meal entry (source: 'scan'). */
+    addToMeal() {
+      const user = Auth.currentUser();
+      const st = UIState.scan;
+      const items = (st.result?.items || []).filter((i) => i.included);
+      if (!items.length) return showToast('Select at least one detected food.', 'error');
+
+      let added = 0;
+      for (const item of items) {
+        const res = MealService.addMeal({
+          userId: user.id, foodId: item.foodId, servings: item.servings, mealType: st.mealType, source: 'scan'
+        });
+        if (!res.ok) return showToast(res.error, 'error');
+        added += res.entry.calories;
+      }
+      showToast(`Added ${items.length} scanned item${items.length === 1 ? '' : 's'} to ${st.mealType} (+${Format.kcal(added)} kcal)`);
+
+      if (st.imageUrl && st.imageUrl.startsWith('blob:')) URL.revokeObjectURL(st.imageUrl);
+      UIState.scan = { imageUrl: null, fileName: '', sampleId: null, avgColor: null, status: 'idle', result: null, mealType: null, token: st.token + 1 };
+      Router.go('dashboard');
+    },
+
+    bind() {
+      const root = $('#screen-scan');
+      const fileInput = $('#scan-file');
+
+      fileInput.addEventListener('change', () => {
+        ScanView.handleFile(fileInput.files[0]);
+        fileInput.value = ''; // allow re-selecting the same file
+      });
+
+      root.addEventListener('change', (e) => {
+        const toggle = e.target.closest('[data-toggle-item]');
+        if (!toggle) return;
+        UIState.scan.result.items[Number(toggle.dataset.toggleItem)].included = toggle.checked;
+        Router.refresh();
+      });
+
+      root.addEventListener('click', (e) => {
+        const st = UIState.scan;
+        const sample = e.target.closest('[data-sample]');
+        if (sample) return ScanView.setImage({ imageUrl: SAMPLE_PLATES[sample.dataset.sample], fileName: '', sampleId: sample.dataset.sample });
+
+        const portion = e.target.closest('[data-portion]');
+        if (portion) {
+          const item = st.result.items[Number(portion.dataset.portion)];
+          const next = item.servings + Number(portion.dataset.delta) * CONFIG.SERVING_STEP;
+          item.servings = Math.min(CONFIG.MAX_SERVINGS, Math.max(CONFIG.SERVING_STEP, next));
+          return Router.refresh();
+        }
+
+        const mealTypeBtn = e.target.closest('[data-scan-meal-type]');
+        if (mealTypeBtn) {
+          st.mealType = mealTypeBtn.dataset.scanMealType;
+          return Router.refresh();
+        }
+
+        switch (e.target.closest('[data-action]')?.dataset.action) {
+          case 'upload': return fileInput.click();
+          case 'analyze': return ScanView.analyze();
+          case 'scan-add': return ScanView.addToMeal();
+        }
+      });
+    }
+  };
+
   /* ==========================================================================
      8. ROUTER — hash-based navigation with authentication guard
      ========================================================================== */
@@ -1365,7 +1846,8 @@
     search: { screen: 'search', view: SearchView, title: 'Search Food', nav: 'search' },
     food: { screen: 'food', view: FoodView, title: 'Food Details', nav: 'search' },
     history: { screen: 'history', view: HistoryView, title: 'Nutrition History', nav: 'history' },
-    profile: { screen: 'profile', view: ProfileView, title: 'Profile', nav: 'profile' }
+    profile: { screen: 'profile', view: ProfileView, title: 'Profile', nav: 'profile' },
+    scan: { screen: 'scan', view: ScanView, title: 'Scan Food', nav: 'scan' }
   };
 
   const Router = {
@@ -1422,7 +1904,7 @@
      ========================================================================== */
   function init() {
     seedDemoData();
-    [LoginView, DashboardView, SearchView, FoodView, HistoryView, ProfileView, ForgotModal]
+    [LoginView, DashboardView, SearchView, FoodView, HistoryView, ProfileView, ScanView, ForgotModal]
       .forEach((v) => v.bind());
     window.addEventListener('hashchange', () => Router.render());
     Router.render();
@@ -1432,6 +1914,7 @@
   window.ECTS = {
     CONFIG, FOOD_DATABASE, DateUtil, Validator, Format, Storage,
     UserRepository, MealRepository, Auth, FoodService, Nutrition, MealService,
+    FoodRecognizer, SCAN_DATASET,
     seedDemoData, escapeHtml
   };
 
