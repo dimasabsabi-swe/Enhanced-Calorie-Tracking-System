@@ -2,7 +2,7 @@
 <!--
   ECTS — Automated unit test runner
   Open this file in a browser (or serve the project folder) to run the
-  test suite against the business logic in ../src/app.js.
+  test suite against the business logic in ../app.js.
   Tests use a separate storage prefix so they never touch real app data.
 -->
 <html lang="en">
@@ -22,7 +22,7 @@
     code { font-size: 12px; }
   </style>
   <script>window.ECTS_STORAGE_PREFIX = 'ects.test.';</script>
-  <script src="../src/app.js"></script>
+  <script src="../app.js"></script>
 </head>
 <body>
   <h1>ECTS Unit Tests</h1>
@@ -36,7 +36,7 @@
     (function () {
       'use strict';
       const { Validator, Auth, Storage, FoodService, Nutrition, MealService, MealRepository,
-              UserRepository, DateUtil, seedDemoData, escapeHtml, CONFIG } = window.ECTS;
+              UserRepository, DateUtil, seedDemoData, escapeHtml, CONFIG, FoodRecognizer } = window.ECTS;
 
       const results = [];
       let counter = 0;
@@ -138,6 +138,34 @@
         UserRepository.save({ ...demo, dailyGoal: 2200 });
         return UserRepository.findById(demo.id).dailyGoal;
       });
+
+      /* ---- Scan Food (simulated recognition) ---- */
+      test('FoodRecognizer', 'File name "chicken_rice.jpg" detects chicken + rice', ['chicken-breast', 'white-rice'],
+        () => FoodRecognizer.fromFileName('chicken_rice.jpg').map(f => f.foodId));
+      test('FoodRecognizer', 'File name without food words detects nothing', 0, () => FoodRecognizer.fromFileName('IMG_0042.png').length);
+      test('FoodRecognizer', 'Sample "grilled-fish-plate" → 3 foods', ['grilled-fish', 'white-rice', 'garden-salad'],
+        () => FoodRecognizer.analyze({ sampleId: 'grilled-fish-plate' }).items.map(i => i.foodId));
+      test('FoodRecognizer', 'Sample result uses sample method + label', ['sample', 'Grilled Fish Plate'],
+        () => { const r = FoodRecognizer.analyze({ sampleId: 'grilled-fish-plate' }); return [r.method, r.label]; });
+      test('FoodRecognizer', 'Yellow image → banana', 'banana', () => FoodRecognizer.classifyColor({ r: 235, g: 205, b: 60 }));
+      test('FoodRecognizer', 'Red image → apple', 'apple', () => FoodRecognizer.classifyColor({ r: 200, g: 40, b: 40 }));
+      test('FoodRecognizer', 'Green image → salad bowl', 'salad-bowl', () => FoodRecognizer.classifyColor({ r: 80, g: 170, b: 70 }));
+      test('FoodRecognizer', 'Uploaded "banana.jpg" → Banana, 105 kcal', ['Banana', 105], () => {
+        const r = FoodRecognizer.analyze({ fileName: 'banana.jpg' });
+        return [r.label, FoodRecognizer.totals(r.items).calories];
+      });
+      test('FoodRecognizer', 'No input falls back to default plate', 'Chicken & Rice Plate', () => FoodRecognizer.analyze({}).label);
+      test('FoodRecognizer', 'Confidence is between 84% and 97%', true,
+        () => FoodRecognizer.analyze({ sampleId: 'chicken-rice-plate' }).items.every(i => i.confidence >= 84 && i.confidence <= 97));
+      test('FoodRecognizer', 'Excluded items are left out of totals', 453, () => {
+        const r = FoodRecognizer.analyze({ sampleId: 'chicken-rice-plate' });
+        r.items[2].included = false; // drop the salad
+        return FoodRecognizer.totals(r.items).calories;
+      });
+      test('MealService', 'Scanned meal is stored with source "scan"', 'scan',
+        () => MealService.addMeal({ userId: demo.id, foodId: 'pasta', servings: 1.5, mealType: 'Dinner', source: 'scan' }).entry.source);
+      test('MealService', 'Searched meal defaults to source "search"', 'search',
+        () => MealService.addMeal({ userId: demo.id, foodId: 'apple', servings: 1, mealType: 'Snack' }).entry.source);
 
       /* ---- Security ---- */
       test('Security', 'HTML in user input is escaped', '&lt;img src=x onerror=&quot;alert(1)&quot;&gt;', () => escapeHtml('<img src=x onerror="alert(1)">'));
