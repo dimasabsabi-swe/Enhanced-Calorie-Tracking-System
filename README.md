@@ -6,9 +6,8 @@
 
 |Name|Student ID|Role|
 |-|-|-|
-|*Member 1*|*ID*|*e.g. Front-end / UI*|
-|*Member 2*|*ID*|*e.g. Business logic*|
-|*Member 3*|*ID*|*e.g. Testing \& documentation*|
+|Dimah Sabsabi|1108202|Requirements, design, implementation, testing |
+
 
 ## Problem
 
@@ -82,8 +81,8 @@ ects/
 ## Installation
 
 ```bash
-git clone <your-repository-url>
-cd ects
+git clone https://github.com/dimasabsabi-swe/Enhanced-Calorie-Tracking-System
+cd Enhanced-Calorie-Tracking-System
 ```
 
 There are no dependencies to install for the app itself.
@@ -94,15 +93,15 @@ No configuration is needed. You can change these optional settings in the `CONFI
 
 |Setting|Default|Description|
 |-|-|-|
-|`DEFAULT\\\_GOAL`|`2000`|Starting daily calorie goal|
-|`MIN\\\_GOAL` / `MAX\\\_GOAL`|`1000` / `5000`|Allowed goal range|
-|`MACRO\\\_SPLIT`|25% / 50% / 25%|Protein / carbs / fat targets|
-|`USER\\\_TYPES`|Standard, Premium, Athlete, Dietitian|Profile user-type options|
-|`DEMO\\\_ACCOUNT`|`demo@ects.app` / `demo123`|Seeded demo login|
+|`DEFAULT_GOAL`|`2000`|Starting daily calorie goal|
+|`MIN_GOAL` / `MAX\\\_GOAL`|`1000` / `5000`|Allowed goal range|
+|`MACRO_SPLIT`|25% / 50% / 25%|Protein / carbs / fat targets|
+|`USER_TYPES`|Standard, Premium, Athlete, Dietitian|Profile user-type options|
+|`DEMO_ACCOUNT`|`demo@ects.app` / `demo123`|Seeded demo login|
 
 ## How to Run
 
-**Option A: open directly.** Double-click `index.html`.
+**Option A: open directly.** Open `src/index.html`
 
 **Option B: local server (recommended).**
 
@@ -113,7 +112,7 @@ python -m http.server 8000
 npx serve .
 ```
 
-Then open [http://localhost:8000](http://localhost:8000).
+Then open http://localhost:8000/src/.
 
 Log in with **demo@ects.app / demo123**, or click **Use demo account**. On first launch, the demo account is seeded with two weeks of meal history. Use **Profile → Reset demo data** to restore it at any time.
 
